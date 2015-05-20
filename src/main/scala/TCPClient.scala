@@ -42,7 +42,9 @@ class TCPClient(remoteAddr: InetSocketAddress, numClients: Int) extends Actor wi
     case CommandFailed(_: Connect) =>
       log.warning("connect failed")
       context stop self
-
+    case r @ Reconnect =>
+      log.info("Reconnect request made. Trying...")
+      IO(Tcp) ! Connect(remoteAddr)
     case c @ Connected(remote, local) =>
       log.info("Connected Remote: '{}' Local: '{}'", remote, local)
       val connection = sender()
@@ -62,11 +64,13 @@ class TCPClient(remoteAddr: InetSocketAddress, numClients: Int) extends Actor wi
         case _: ConnectionClosed =>
           // TODO - Reconnect here
           log.warning("Connection closed")
-
-          // quiesce for a minute
-          // TODO - Scheduler to reconnect in 1 minute
           // roll back our current behavior
           context.unbecome()
+
+
+          // quiesce for a minute
+          val reconnect =
+            system.scheduler.scheduleOnce(1 minute, self, Reconnect)
       }
       // schedule occasional ticks that we'll send echo messages to the remote end
       val cancellable =
@@ -78,3 +82,4 @@ class TCPClient(remoteAddr: InetSocketAddress, numClients: Int) extends Actor wi
 }
 
 case object Tick
+case object Reconnect
