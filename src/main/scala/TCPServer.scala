@@ -41,6 +41,7 @@ class TCPHandler extends Actor with ActorLogging {
   def receive = {
     case Received(data) =>
       // For now, echo back to the client
+      log.info("Received data from client: {}", data)
       sender() ! Write(data)
     case PeerClosed =>
       context stop self
