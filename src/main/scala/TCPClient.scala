@@ -16,6 +16,19 @@ object TCPClientApp extends App {
 }
 
 class TCPClientMaster(remoteAddr: InetSocketAddress, numClients: Int) extends Actor with ActorLogging {
+  var activeConnections = 0
+  var receivedResponses = 0
+
+  @throws[Exception](classOf[Exception])
+  override def preStart(): Unit = {
+    import scala.concurrent.ExecutionContext.Implicits.global
+    context.system.scheduler.schedule(0 milliseconds,
+      5 seconds,
+      self,
+      PrintStat)
+    super.preStart()
+  }
+
   var router = {
     val routees = Vector.fill(numClients) {
       val r = context.actorOf(Props(classOf[TCPClient], remoteAddr, numClients))
@@ -24,13 +37,19 @@ class TCPClientMaster(remoteAddr: InetSocketAddress, numClients: Int) extends Ac
     }
     Router(RoundRobinRoutingLogic(), routees)
   }
+
   def receive = {
+    case ClientConnected => activeConnections += 1
+    case ClientDisconnected => activeConnections -= 1
+    case ReceivedResponse => receivedResponses += 1
+    case PrintStat => log.info(s"active connections: ${activeConnections} | received responses: ${receivedResponses}")
     case anything =>
       log.info("Got a work request, we don't handle anything.")
   }
 }
 
 class TCPClient(remoteAddr: InetSocketAddress, numClients: Int) extends Actor with ActorLogging {
+
   import Tcp._
   import context.system
   import context.dispatcher
@@ -46,9 +65,10 @@ class TCPClient(remoteAddr: InetSocketAddress, numClients: Int) extends Actor wi
       log.info("Reconnect request made. Trying...")
       IO(Tcp) ! Connect(remoteAddr)
     case c @ Connected(remote, local) =>
-      log.info("Connected Remote: '{}' Local: '{}'", remote, local)
+      //      log.info("Connected Remote: '{}' Local: '{}'", remote, local)
       val connection = sender()
       connection ! Register(self)
+      context.parent ! ClientConnected
       context become {
         case data: ByteString =>
           connection ! Write(data)
@@ -58,28 +78,32 @@ class TCPClient(remoteAddr: InetSocketAddress, numClients: Int) extends Actor wi
           // O/S buffer was full
           log.warning("write failed")
         case Received(data) =>
-          log.info("Received data: '{}'", data)
+          context.parent ! ReceivedResponse
         case "close" =>
           connection ! Close
         case _: ConnectionClosed =>
-          // TODO - Reconnect here
-          log.warning("Connection closed")
           // roll back our current behavior
           context.unbecome()
-
-
+          context.parent ! ClientDisconnected
           // quiesce for a minute
-          val reconnect =
-            system.scheduler.scheduleOnce(1 minute, self, Reconnect)
+          system.scheduler.scheduleOnce(1 minute, self, Reconnect)
       }
       // schedule occasional ticks that we'll send echo messages to the remote end
-      val cancellable =
-        system.scheduler.schedule(0 milliseconds,
-          15 seconds,
-          self,
-          Tick)
+      system.scheduler.schedule(0 milliseconds,
+        15 seconds,
+        self,
+        Tick)
   }
 }
 
 case object Tick
+
 case object Reconnect
+
+case object ClientConnected
+
+case object ClientDisconnected
+
+case object ReceivedResponse
+
+case object PrintStat
